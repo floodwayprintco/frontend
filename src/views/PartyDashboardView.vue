@@ -157,8 +157,9 @@
           }"
         >
           <LyricsViewer
-            :media-item="store.curQueueItem?.media_item"
+            :media-item="lyricsMediaItem"
             :position="lyricsElapsedTime"
+            :offset="lyricsOffset"
             :stream-details="store.curQueueItem?.streamdetails"
             :lyrics="currentLyrics.plain"
             :lrc-lyrics="currentLyrics.synced"
@@ -169,7 +170,28 @@
 
         <div class="karaoke-track-stack">
           <div
-            v-if="!store.curQueueItem && !visibleItems.length"
+            v-if="externalMedia"
+            class="empty-state empty-state--karaoke"
+            :style="{ color: chromeTextColor }"
+          >
+            <img
+              v-if="externalMedia.image_url"
+              :src="externalMedia.image_url"
+              alt=""
+              class="mb-4 aspect-square w-[clamp(4rem,12vw,10rem)] rounded-lg object-cover shadow-[0_8px_24px_rgba(0,0,0,0.35)]"
+            />
+            <h2 class="empty-title mb-1 text-inherit">
+              {{ externalMedia.title }}
+            </h2>
+            <p
+              v-if="externalMedia.artist"
+              class="empty-message text-inherit opacity-75"
+            >
+              {{ externalMedia.artist }}
+            </p>
+          </div>
+          <div
+            v-else-if="!store.curQueueItem && !visibleItems.length"
             class="empty-state empty-state--karaoke"
           >
             <Music :size="60" class="empty-icon" />
@@ -225,8 +247,9 @@
             ]"
           >
             <LyricsViewer
-              :media-item="store.curQueueItem?.media_item"
+              :media-item="lyricsMediaItem"
               :position="lyricsElapsedTime"
+              :offset="lyricsOffset"
               :stream-details="store.curQueueItem?.streamdetails"
               :lyrics="currentLyrics.plain"
               :lrc-lyrics="currentLyrics.synced"
@@ -241,9 +264,32 @@
           class="track-stack"
           :style="swapped && !displayLyrics ? { order: -1 } : undefined"
         >
+          <!-- External source (Spotify Connect, AirPlay, ...): no queue to list -->
+          <div
+            v-if="externalMedia"
+            class="empty-state"
+            :style="{ color: chromeTextColor }"
+          >
+            <img
+              v-if="externalMedia.image_url"
+              :src="externalMedia.image_url"
+              alt=""
+              class="mb-4 aspect-square w-[clamp(4rem,12vw,10rem)] rounded-lg object-cover shadow-[0_8px_24px_rgba(0,0,0,0.35)]"
+            />
+            <h2 class="empty-title mb-1 text-inherit">
+              {{ externalMedia.title }}
+            </h2>
+            <p
+              v-if="externalMedia.artist"
+              class="empty-message text-inherit opacity-75"
+            >
+              {{ externalMedia.artist }}
+            </p>
+          </div>
+
           <!-- Empty State -->
           <div
-            v-if="!store.curQueueItem && !visibleItems.length"
+            v-else-if="!store.curQueueItem && !visibleItems.length"
             class="empty-state"
           >
             <Music :size="120" class="empty-icon" />
@@ -339,6 +385,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useExternalSourceTrack } from "@/composables/lyrics/useExternalSourceTrack";
 import { useLyricsElapsedTime } from "@/composables/lyrics/useLyricsElapsedTime";
 import { usePartyConfig } from "@/composables/usePartyConfig";
 import { useVisualizer } from "@/composables/visualizer/useVisualizer";
@@ -373,9 +420,10 @@ import {
 import { useColorMode } from "@vueuse/core";
 import Color from "color";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 const router = useRouter();
+const route = useRoute();
 const { config: partyConfig, fetchConfig } = usePartyConfig();
 const logoSrc = new URL("@/assets/logo/logo.svg", import.meta.url).href;
 const logoDarkSrc = new URL("@/assets/logo/logo-dark.svg", import.meta.url)
@@ -556,6 +604,24 @@ const isPlaying = computed(
 const queueItems = ref<QueueItem[]>([]);
 const lastFetchedOffset = ref<number>(0);
 
+// A source playing outside the queue (Spotify Connect, AirPlay, ...) has no queue
+// item; its lyrics come from the provider track it matches instead.
+const { externalMedia, externalTrack } = useExternalSourceTrack();
+const followsExternalSource = computed(() => !!externalMedia.value);
+const lyricsMediaItem = computed(
+  () => store.curQueueItem?.media_item ?? externalTrack.value,
+);
+
+// Seconds added to an external source's position before syncing lyrics. Some
+// chains (e.g. Spotify Connect into an AirPlay group) report a position well
+// ahead of what the speakers play, so the lyrics would lead without it.
+const EXTERNAL_LYRICS_OFFSET_PARAM = "external_lyrics_offset";
+const lyricsOffset = computed(() => {
+  if (!followsExternalSource.value) return 0;
+  const offset = Number(route.query[EXTERNAL_LYRICS_OFFSET_PARAM]);
+  return Number.isFinite(offset) ? offset : 0;
+});
+
 // Lyrics state
 const currentLyrics = ref<{ plain: string | null; synced: string | null }>({
   plain: null,
@@ -565,7 +631,7 @@ const currentLyrics = ref<{ plain: string | null; synced: string | null }>({
 const fetchLyrics = async () => {
   currentLyrics.value = { plain: null, synced: null };
 
-  const mediaItem = store.curQueueItem?.media_item;
+  const mediaItem = lyricsMediaItem.value;
   if (!mediaItem || mediaItem.media_type !== MediaType.TRACK) return;
 
   const track = mediaItem as Track;
@@ -596,7 +662,10 @@ const lyricsEnabled = computed(() => karaokeMode.value);
 const lyricsTextColor = computed(() =>
   albumArtUrl.value ? "#FFFFFF" : isDark.value ? "#FFFFFF" : "#000000",
 );
-const { elapsedTime: lyricsElapsedTime } = useLyricsElapsedTime(lyricsEnabled);
+const { elapsedTime: lyricsElapsedTime } = useLyricsElapsedTime(
+  lyricsEnabled,
+  followsExternalSource,
+);
 
 const colorPalette = computed<ImageColorPalette>(() =>
   paletteFromServer(store.activePlayer?.current_media?.palette),
@@ -718,7 +787,8 @@ const fetchQueueItems = async (force = false) => {
 // station logo sitting on the queue item.
 const albumArtUrl = computed(() => {
   const img = getMediaItemImage(store.curQueueItem);
-  return img ? getMediaItemImageUrl(img) || "" : "";
+  if (!img) return externalMedia.value?.image_url ?? "";
+  return getMediaItemImageUrl(img) || "";
 });
 
 // Gradient background style (used when album art is disabled, or as fallback)
@@ -954,7 +1024,7 @@ watch(
 
 // Fetch lyrics when track changes, and pre-fetch next track lyrics
 watch(
-  () => store.curQueueItem?.media_item?.item_id,
+  () => lyricsMediaItem.value?.uri,
   async () => {
     await fetchLyrics();
     // Pre-fetch next track lyrics so they're cached when it starts playing

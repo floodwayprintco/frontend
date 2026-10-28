@@ -7,24 +7,32 @@
  * `enabled` guard.
  *
  * The position comes from that same queue, matching where its consumers take the
- * lyrics from: the queue's current item. A source playing on the player outside a
- * Music Assistant queue leaves them without lyrics, so there is nothing to
- * synchronize either.
+ * lyrics from: the queue's current item. A consumer that shows lyrics for a source
+ * playing outside the queue (see `useExternalSourceTrack`) passes `followPlayer`,
+ * and the position then comes from the player itself.
  */
 
 import { ref, watch, watchEffect, onScopeDispose, type Ref } from "vue";
 import { PlaybackState } from "@/plugins/api/interfaces";
 import { store } from "@/plugins/store";
-import { resolveQueueElapsedTime } from "@/helpers/activeElapsedTime";
+import {
+  resolveActiveElapsedTime,
+  resolveQueueElapsedTime,
+} from "@/helpers/activeElapsedTime";
 
-export function useLyricsElapsedTime(enabled?: Ref<boolean>) {
+export function useLyricsElapsedTime(
+  enabled?: Ref<boolean>,
+  followPlayer?: Ref<boolean>,
+) {
   const elapsedTime = ref(0);
   let rafId: number | null = null;
 
   // Keeps the last known position when the queue reports no position, so the
   // lyrics do not snap back to the start of the track.
   const syncPosition = () => {
-    const elapsed = resolveQueueElapsedTime();
+    const elapsed = followPlayer?.value
+      ? resolveActiveElapsedTime()
+      : resolveQueueElapsedTime();
     if (elapsed !== undefined) {
       elapsedTime.value = elapsed;
     }
@@ -79,11 +87,17 @@ export function useLyricsElapsedTime(enabled?: Ref<boolean>) {
   // `active` as well, for the position it returns; here it decides whether the
   // loop burns frames at all.
   watchEffect(() => {
-    const queue = store.activePlayerQueue;
-    const playing = queue?.state === PlaybackState.PLAYING;
     const isEnabled = enabled ? enabled.value : true;
 
-    shouldRun = playing && !!queue?.active && isEnabled;
+    if (followPlayer?.value) {
+      shouldRun =
+        store.activePlayer?.playback_state === PlaybackState.PLAYING &&
+        isEnabled;
+    } else {
+      const queue = store.activePlayerQueue;
+      const playing = queue?.state === PlaybackState.PLAYING;
+      shouldRun = playing && !!queue?.active && isEnabled;
+    }
 
     if (shouldRun && document.visibilityState === "visible") {
       start();
